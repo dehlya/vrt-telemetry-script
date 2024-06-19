@@ -14,7 +14,12 @@ UDP_IP = "0.0.0.0"
 UDP_PORT = 7070
 
 # Mode selection: 'realtime' for live data, 'replay' for CSV replay
-mode = 'realtime'  # Change to 'realtime' for live data
+mode_selection = ["realtime", "replay"]
+print("Avalable modes:")
+for idx, mode in enumerate(mode_selection):
+    print(f"{idx + 1}. {mode}")
+mode_idx = int(input("Select a mode by entering the corresponding number : ")) - 1
+mode = mode_selection[mode_idx]
 
 # File to replay from
 replay_folder = '../data'
@@ -126,12 +131,6 @@ def replay_listener():
                 key: float(row[key]) if key in ["lat", "lon", "Car_Speed", "GSPSpeed", "Brake_Pedal", "Accelerator_Pedal"] else row[key]
                 for key in row.keys()
             }
-            if "GPSCoords" in json_data:
-                lat_lon = json_data["GPSCoords"].split(' ')
-                if len(lat_lon) == 2:
-                    json_data["lat"] = float(lat_lon[0])
-                    json_data["lon"] = float(lat_lon[1])
-                del json_data["GPSCoords"]
             process_data(json_data)
 
 def process_data(json_data):
