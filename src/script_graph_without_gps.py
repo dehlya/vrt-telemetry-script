@@ -7,13 +7,13 @@ import csv
 import os
 from datetime import datetime
 import time
-from matplotlib.widgets import Slider
 
 # Define the address and port to listen on
-UDP_IP = "0.0.0.0"
+UDP_IP = "0.0.0.0" #let's maybe change that one tho
 UDP_PORT = 7070
 
 # Mode selection: 'realtime' for live data, 'replay' for CSV replay
+#TODO: create a selection for user input 
 mode = 'realtime'  # Change to 'realtime' for live data
 
 # File to replay from
@@ -23,9 +23,7 @@ if not os.path.exists(replay_folder):
 
 # Only check for replay files if in replay mode
 if mode == 'replay':
-    files_list = os.listdir(replay_folder)
-    files_list.sort()
-    csv_files = [f for f in files_list if f.endswith('.csv')]
+    csv_files = [f for f in os.listdir(replay_folder) if f.endswith('.csv')]
     if not csv_files:
         print(f"No CSV files found in the {replay_folder} folder. Please ensure the folder contains replay files.")
         exit(1)
@@ -78,9 +76,6 @@ data_storage = {
 # Create a lock for thread-safe data access
 data_lock = threading.Lock()
 
-# Initialize flag positions list
-flag_positions = []
-
 # CSV logging setup (only for 'realtime' mode)
 if mode == 'realtime':
     start_time = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -106,12 +101,6 @@ def udp_listener():
         except json.JSONDecodeError:
             print("Received a corrupted JSON package, skipping...")
             continue
-        if "GPSCoords" in json_data:
-            lat_lon = json_data["GPSCoords"].split(' ')
-            if len(lat_lon) == 2:
-                json_data["lat"] = float(lat_lon[0])
-                json_data["lon"] = float(lat_lon[1])
-            del json_data["GPSCoords"]
         
         process_data(json_data)
         
@@ -125,14 +114,18 @@ def replay_listener():
             json_data = {
                 key: float(row[key]) if key in ["lat", "lon", "Car_Speed", "GSPSpeed", "Brake_Pedal", "Accelerator_Pedal"] else row[key]
                 for key in row.keys()
+                # if key not in ["timestamp"]
             }
-            if "GPSCoords" in json_data:
+            if "GPSCoords" in json_data: #TODO: GPS replay fix
                 lat_lon = json_data["GPSCoords"].split(' ')
                 if len(lat_lon) == 2:
                     json_data["lat"] = float(lat_lon[0])
                     json_data["lon"] = float(lat_lon[1])
                 del json_data["GPSCoords"]
+            # if "timestamp" not in json_data:
+            #     json_data["timestamp"] = datetime.now().isoformat()
             process_data(json_data)
+            time.sleep(1)  # Simulate delay between readings
 
 def process_data(json_data):
     with data_lock:
@@ -153,18 +146,23 @@ def process_data(json_data):
                                 values[key].append(float(json_data[key]))  # Ensure all data is numerical
                             except ValueError:
                                 continue
+                        if len(values[key]) > 100:
+                            values[key].pop(0)
             if category == "gps":
-                try:
-                    values["lat"].append(json_data["lat"])
-                    values["lon"].append(json_data["lon"])
-                except (ValueError, IndexError):
+                gps_coords = json_data.get("GPSCoords", "0 0").split(' ')
+                if len(gps_coords) == 2:
+                    try:
+                        lat, lon = float(gps_coords[0]), float(gps_coords[1])
+                        values["lat"].append(lat)
+                        values["lon"].append(lon)
+                        if len(values["lat"]) > 100:
+                            values["lat"].pop(0)
+                            values["lon"].pop(0)
+                        print(f"Parsed GPS Coordinates: {lat}, {lon}")  # Debug print
+                    except (ValueError, IndexError):
                         print("Received malformed GPS coordinates, skipping...")
-        
-        # Check for flag changes
-        if "Flag" in json_data:
-            if len(data_storage["flag"]["Flag"]) == 0 or json_data["Flag"] != data_storage["flag"]["Flag"][-1]:
-                flag_x = len(data_storage["timestamp"])  # Use the current timestamp index for the flag position
-                flag_positions.append(flag_x)
+            if "timestamp" in json_data:
+                data_storage["timestamp"].append(json_data["timestamp"])
 
 def log_to_csv(json_data):
     if mode == 'realtime':
@@ -192,20 +190,23 @@ listener_thread.start()
 # Set up the plots
 fig, axs = plt.subplots(4, 2, figsize=(15, 20))
 
+# gps_lat_bounds = (46.210, 46.203)
+# gps_lon_bounds = (7.550, 7.625)
+
 # Configure each subplot
 ax_titles = ['Temperatures', 'Speeds', 'Suspensions', 'Pedals', 'Direction', 'GPS Coordinates', 'Flags']
-y_limits = [(0, 100), (0, 100), (2500, 4500), (1000, 3000), (-150, 150), (None, None), (0, 10)]
+y_limits = [(0, 100), (0, 100), (0, 5000), (1000, 2500), (-150, 150), (None, None), (0, 10)] #TODO: change limits to fit only the possible values
 live_data_texts = []
 
 # Define GPS map boundaries
-gps_lat_bounds = (46.206, 46.208)
-gps_lon_bounds = (7.560, 7.690)
+gps_lat_bounds = (46.200, 46.700)
+gps_lon_bounds = (7.200, 7.365)
 
 for i, ax in enumerate(axs.flatten()):
     if i < len(ax_titles):
         ax.set_title(ax_titles[i])
         if i != 5:  # All plots except GPS
-            ax.set_xlim(0, 100)
+            ax.set_xlim(0, 100) #TODO: change this to put timestamps (hh:mm:ss i think)
             if y_limits[i]:
                 ax.set_ylim(y_limits[i])
         else:  # GPS plot
@@ -237,7 +238,7 @@ for ax in axs.flatten():
 
 flag_lines = []
 
-def add_flag_lines(axs, flag_x): 
+def add_flag_lines(axs, flag_x): #TODO: check this because it doesn't work ahahaha 
     for ax in axs.flatten():
         flag_line = ax.axvline(x=flag_x, color='red', linestyle='--')
         flag_lines.append(flag_line)
@@ -256,11 +257,7 @@ def init():
             artists.append(line)
     return artists + live_data_texts
 
-auto_scroll = True
-max_gps_speed = 0
-
 def update(frame):
-    global auto_scroll, max_gps_speed
     artists = []
     with data_lock:
         for i, (category, line_list) in enumerate(lines.items()):
@@ -272,14 +269,9 @@ def update(frame):
                     line.set_data(xdata, ydata)
                     if ydata:
                         current_values.append(f"{key}: {ydata[-1]}")
-                        if key == 'GSPSpeed':
-                            max_gps_speed = max(max_gps_speed, max(ydata))
                     ax = line.axes
                     if xdata:
-                        if auto_scroll:
-                            ax.set_xlim(max(0, len(xdata) - 100), len(xdata))
-                        else:
-                            ax.set_xlim(slider.val, slider.val + 100)
+                        ax.set_xlim(max(0, len(xdata) - 100), len(xdata))  # Set the x-axis to scroll
                     artists.append(line)
             else:
                 if category == "direction":
@@ -295,9 +287,7 @@ def update(frame):
                     lon_data = data_storage["gps"]["lon"]
                     line_list.set_data(lon_data, lat_data)
                     if lat_data and lon_data:
-                        current_values.append(f"GPS: {lon_data[-1]}, {lat_data[-1]}")
-                        live_data_texts[i].set_text("\n".join(current_values))
-
+                        current_values.append(f"GPS: {lat_data[-1]}, {lon_data[-1]}")
                     artists.append(line_list)
                     continue
                 else:
@@ -310,51 +300,13 @@ def update(frame):
                     current_values.append(f"{key}: {ydata[-1]}")
                 ax = line_list.axes
                 if xdata:
-                    if auto_scroll:
-                        ax.set_xlim(max(0, len(xdata) - 100), len(xdata))
-                    else:
-                        ax.set_xlim(slider.val, slider.val + 100)
+                    ax.set_xlim(max(0, len(xdata) - 100), len(xdata))  # Set the x-axis to scroll
                 artists.append(line_list)
             live_data_texts[i].set_text("\n".join(current_values))
-        
-        for flag_x in flag_positions:
-            add_flag_lines(axs, flag_x)
-
-        max_gps_speed_text.set_text(f'Highest GPS Speed: {max_gps_speed:.2f} km/h')
-
     return artists + live_data_texts + flag_lines
 
 # Create the animation
 ani = animation.FuncAnimation(fig, update, init_func=init, blit=True, interval=1000, cache_frame_data=False)
-
-# Add a slider for scrolling
-ax_slider = plt.axes([0.15, 0.02, 0.7, 0.02], facecolor='lightgoldenrodyellow')
-slider = Slider(ax_slider, 'Scroll', 0, 1000, valinit=0, valstep=1)
-
-# Function to update the x-axis limits of all graphs when the slider is moved
-def update_slider(val):
-    global auto_scroll
-    auto_scroll = False
-    for i, ax in enumerate(axs.flatten()):
-        if i != 5:  # All plots except GPS
-            ax.set_xlim(val, val + 100)
-
-slider.on_changed(update_slider)
-
-# Event handlers to detect mouse press and release
-def on_press(event):
-    if event.inaxes == ax_slider:
-        update_slider(slider.val)
-
-def on_release(event):
-    global auto_scroll
-    if event.inaxes == ax_slider:
-        auto_scroll = True
-
-fig.canvas.mpl_connect('button_press_event', on_press)
-fig.canvas.mpl_connect('button_release_event', on_release)
-
-max_gps_speed_text = fig.text(0.5, 0.01, '', ha='center', fontsize=12, color='red')
 
 # Display the plot
 plt.tight_layout()

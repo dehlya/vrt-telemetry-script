@@ -23,9 +23,7 @@ if not os.path.exists(replay_folder):
 
 # Only check for replay files if in replay mode
 if mode == 'replay':
-    files_list = os.listdir(replay_folder)
-    files_list.sort()
-    csv_files = [f for f in files_list if f.endswith('.csv')]
+    csv_files = [f for f in os.listdir(replay_folder) if f.endswith('.csv')]
     if not csv_files:
         print(f"No CSV files found in the {replay_folder} folder. Please ensure the folder contains replay files.")
         exit(1)
@@ -44,8 +42,8 @@ data_storage = {
         "Left_Inverter_Temperature": [],
         "Right_Inverter_Temperature": [],
         "Right_Gearbox_Temp": [],
-        "Right_Radiator_Temp": [],
         "Left_Gearbox_Temp": [],
+        "Right_Radiator_Temp": [],
         "Left_Radiator_Temp": []
     },
     "speeds": {
@@ -64,6 +62,19 @@ data_storage = {
     },
     "direction": {
         "Raw_Direction": []
+    },
+    "accelerometer": {
+        "Accelerometer_X": [],
+        "Accelerometer_Y": [],
+        "Accelerometer_Z": []
+    },
+    "states": {
+        "Shutdown_State": [], #2 = on, 0 = off
+        "Battery_State": [], #3 = normal, 4 = charging, 8 = standby
+    },
+    "setpoints": {
+        "Right_Setpoint": [], 
+        "Left_Setpoint": [], 
     },
     "gps": {
         "lat": [],
@@ -106,12 +117,6 @@ def udp_listener():
         except json.JSONDecodeError:
             print("Received a corrupted JSON package, skipping...")
             continue
-        if "GPSCoords" in json_data:
-            lat_lon = json_data["GPSCoords"].split(' ')
-            if len(lat_lon) == 2:
-                json_data["lat"] = float(lat_lon[0])
-                json_data["lon"] = float(lat_lon[1])
-            del json_data["GPSCoords"]
         
         process_data(json_data)
         
@@ -133,6 +138,7 @@ def replay_listener():
                     json_data["lon"] = float(lat_lon[1])
                 del json_data["GPSCoords"]
             process_data(json_data)
+            time.sleep(1)  # Simulate delay between readings
 
 def process_data(json_data):
     with data_lock:
@@ -148,6 +154,9 @@ def process_data(json_data):
                                 direction -= 3000
                             direction = _map(direction, 2600, 122, -140, 140)
                             values[key].append(direction)
+                        elif  category == "temperatures":
+                            json_data[key] = json_data[key]/100
+
                         else:
                             try:
                                 values[key].append(float(json_data[key]))  # Ensure all data is numerical
@@ -193,13 +202,13 @@ listener_thread.start()
 fig, axs = plt.subplots(4, 2, figsize=(15, 20))
 
 # Configure each subplot
-ax_titles = ['Temperatures', 'Speeds', 'Suspensions', 'Pedals', 'Direction', 'GPS Coordinates', 'Flags']
-y_limits = [(0, 100), (0, 100), (2500, 4500), (1000, 3000), (-150, 150), (None, None), (0, 10)]
+ax_titles = ['Temperatures', 'Speeds', 'Suspensions', 'Pedals', 'Direction', 'Accelerometers', "states", "setpoints", 'GPS Coordinates', 'Flags']
+y_limits = [(0, 100), (0, 100), (2500, 4500), (1000, 3000), (-150, 150), (-2000, 2000), (0, 10), (-33000, -33000 ),(None, None), (0, 10)]
 live_data_texts = []
 
 # Define GPS map boundaries
 gps_lat_bounds = (46.206, 46.208)
-gps_lon_bounds = (7.560, 7.690)
+gps_lon_bounds = (7.550, 7.625)
 
 for i, ax in enumerate(axs.flatten()):
     if i < len(ax_titles):
@@ -224,8 +233,11 @@ lines = {
     "speeds": [axs[0, 1].plot([], [], label=key)[0] for key in data_storage["speeds"].keys()],
     "suspensions": [axs[1, 0].plot([], [], label=key)[0] for key in data_storage["suspensions"].keys()],
     "pedals": [axs[1, 1].plot([], [], label=key)[0] for key in data_storage["pedals"].keys()],
+    "accelerometer": [axs[1, 1].plot([], [], label=key)[0] for key in data_storage["accelerometer"].keys()],
     "direction": axs[2, 0].plot([], [], label='Raw_Direction')[0],
     "gps": axs[2, 1].plot([], [], 'o', label='GPS Coordinates')[0],
+    "states": [axs[1, 1].plot([], [], label=key)[0] for key in data_storage["states"].keys()],
+    "setpoints": [axs[1, 1].plot([], [], label=key)[0] for key in data_storage["setpoints"].keys()],
     "flag": axs[3, 0].plot([], [], label='Flag')[0]
 }
 
@@ -257,10 +269,9 @@ def init():
     return artists + live_data_texts
 
 auto_scroll = True
-max_gps_speed = 0
 
 def update(frame):
-    global auto_scroll, max_gps_speed
+    global auto_scroll
     artists = []
     with data_lock:
         for i, (category, line_list) in enumerate(lines.items()):
@@ -272,8 +283,6 @@ def update(frame):
                     line.set_data(xdata, ydata)
                     if ydata:
                         current_values.append(f"{key}: {ydata[-1]}")
-                        if key == 'GSPSpeed':
-                            max_gps_speed = max(max_gps_speed, max(ydata))
                     ax = line.axes
                     if xdata:
                         if auto_scroll:
@@ -319,9 +328,6 @@ def update(frame):
         
         for flag_x in flag_positions:
             add_flag_lines(axs, flag_x)
-
-        max_gps_speed_text.set_text(f'Highest GPS Speed: {max_gps_speed:.2f} km/h')
-
     return artists + live_data_texts + flag_lines
 
 # Create the animation
@@ -353,8 +359,6 @@ def on_release(event):
 
 fig.canvas.mpl_connect('button_press_event', on_press)
 fig.canvas.mpl_connect('button_release_event', on_release)
-
-max_gps_speed_text = fig.text(0.5, 0.01, '', ha='center', fontsize=12, color='red')
 
 # Display the plot
 plt.tight_layout()
